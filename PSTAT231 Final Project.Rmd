@@ -1,0 +1,591 @@
+---
+title: "Predicting Group A Streptococcus in Children"
+author: "Griffin Sheppard"
+date: "2023-12-15"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    theme: united
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#Load packages
+library(tidymodels)
+library(tidyverse)
+library(ggplot2)
+library(yardstick)
+library(finalfit)
+library(corrplot)
+library(corrr)
+library(glmnet)
+library(ggfortify)
+library(kernlab)
+library(vip)
+```
+
+# Indroduction
+The purpose of this project is to build a machine learning model to predict whether a child with pharyngitis (inflammation of the back of the throat) is positive for group A streptococcus (GAS) without the need for rapid antigen detection testing (RADT).
+
+## What is Group A Streptococcus?
+Group A Streptococcus is a bacterium (Streptococcus pyogenes) that can cause various infections, ranging from mild conditions like strep throat to severe illnesses such as necrotizing fasciitis. Strep throat is a common manifestation, while more serious infections require prompt medical attention and treatment with antibiotics.
+
+## Why Make a Prediction Model?
+There is a lot of debate in the medical community about whether you can diagnose GAS with symptoms alone. Some doctors claim that the only to way accurately diagnose someone is with RADT but these tests cost money and waste valuable time when someone could be requiring treatment. I'm interested in finding out how accurately you can predict the presence of GAS with only symptoms, hopefully saving people time and money.
+
+## Data Introduction
+My data set consists of cases of pharyngitis in children, it contains 676 observations and includes ages, whether the RADT for GAS was positive or negative along with the symptoms the children were experiencing. I found the data set [here on Kaggle](https://www.kaggle.com/datasets/yoshifumimiya/pharyngitis/data). The set contains 20 variables 16 of the variables are categorical where 15 consist of whether a symptom is present or not, the last categorical variable has 4 levels. The 3 other variables that are not categorical are number, age and temperature. The response variable is `radt` which is categorical and can be either positive or negative.
+
+## Describing The Predictors
+* `number` : a unique arbitrary four-digit number is given to each child to anonymize the cases
+* `age_y`: how many years of age the child is
+* `pain`: whether the child said they were in pain
+* `swollenadp`: whether the lymph nodes were swollen and if so, by how much. 0 is not swollen, 1 is < 1cm, 2 is 1cm-2cm, 3 is > 2cm
+* `tender`: whether the lymph nodes were tender
+* `tonsillarswelling`: whether the child had swollen tonsils
+* `exudate`: whether there was tonsillar exudate (pus or fluids accumulating on the child's tonsils)
+* `temperature`: the maximum temperature of the child as reported by the parent
+* `sudden`: whether there was a sudden onset of a soar throat
+* `cough`: whether the child had a cough
+* `rhinorrhea`: whether the child had rhinorrhea (a runny nose)
+* `conjunctivitis`: whether the child had conjunctivitis (inflammation of the white part of the eyeball)
+* `headache`: whether the child has a headache
+* `erythema`: whether the child had erythema of the pharynx (throat redness)
+* `petechiae`: whether the child had palatal petechiae (pinpoint spots on the roof of the mouth)
+* `abdopain`: whether the child had abdominal pain
+* `diarrhea`: whether the child had diarrhea
+* `nauseavomit`: whether the child was nauseous or had vomited
+* `scarlet`: whether the child's rash was scarlatiniform or nonspecific
+
+# Exploring the Data
+Before we can begin building the models we need to explore our data set to see if we need to do any tidying to get our data into a workable state. 
+
+The first thing we need to do before we can begin exploring is load our dataset into R:
+```{r, message=FALSE}
+#Load Dataset from csv
+pharyngitis <- read_csv('data/pharyngitis.csv')
+```
+
+Now taking a brief look at what the data set contains and the type of predictors:
+```{r}
+pharyngitis %>% 
+  head()
+```
+
+Checking the size of the data set:
+```{r}
+#Dimensions of Dataset
+pharyngitis %>% 
+  dim()
+```
+We can see that we have 676 observations and 20 variables
+
+## Missing Data
+There are a few reasons we want to see how much data is missing, if any. To verify the integrity of the data to ensure that the dataset is complete and accurate. Many machine learning algorithms cannot handle missing values directly. If missing data is not addressed, it may lead to errors or suboptimal model performance. Deciding to impute a variable or just remove it entirely depends on how much is missing.
+
+Now to look for any missing data numerically and visually:
+```{r}
+#Number of Missing Values per Predictor
+pharyngitis %>% 
+  is.na() %>%  
+  colSums()
+
+#Plot of Missing Values
+pharyngitis %>% 
+  missing_plot()
+```
+
+Luckily there is not a lot of missing data, with the predictors ranging from 0% missing up to only 6.21% missing. Since none of the predictors are missing a significant amount of data we don't need to remove any and can simply impute any missing values.
+
+Let's check the total number of values that are missing from the dataset:
+```{r}
+#Total Number of Missing Values
+pharyngitis %>% 
+  is.na %>% 
+  sum()
+
+```
+There are only 226 total missing values which only accounts for 1.67% of the total data should it shouldn't make any noticeable impact on the performance of the models.
+
+## Tidying the Data
+We are going to convert our categorical variables to factors. Additionally, we will change the labels of `radt` from 0 and 1 to Negative and Positive to make everything easier to interpret. We will also remove the number column from our data set because these numbers are randomly assigned and won't help the prediction.
+```{r}
+#Convert Categorical Variables to Factor
+pharyngitis<- tibble(pharyngitis) %>% 
+    mutate(radt = factor(radt, labels=c("Negative", "Positive")), 
+           pain=factor(pain),
+           swollenadp=factor(swollenadp),
+           tender=factor(tender),
+           tonsillarswelling=factor(tonsillarswelling),
+           exudate=factor(exudate),
+           sudden=factor(sudden),
+           cough=factor(cough),
+           rhinorrhea=factor(rhinorrhea),
+           conjunctivitis=factor(conjunctivitis),
+           headache=factor(headache),
+           erythema=factor(erythema),
+           petechiae=factor(petechiae), 
+           abdopain=factor(abdopain),
+           diarrhea=factor(diarrhea),
+           nauseavomit=factor(nauseavomit),
+           scarlet=factor(scarlet))
+
+#Remove Number Predictor
+pharyngitis = select(pharyngitis, -number)
+```
+
+Now let's take a peek at the pre-processed data set:
+```{r}
+pharyngitis %>% head()
+```
+That looks much better!
+
+## Visual Exploratory Data Analysis
+Visualizing the data is a great way to pick up on trends and insights that aren't immediately obvious by just looking at the raw data. In this section, we'll plot the distribution of the number of positive and negative cases. We will also plot a correlation matrix to see if any of our predictors are correlated. Finally, I will select some predictors that I suspect will be very influential and will make some charts of whether they had the symptom or not and whether they were positive or negative for GAS.
+
+```{r}
+#Plot of Count of Positive and Negative Tests
+pharyngitis %>% 
+  ggplot(aes(x=radt)) +
+  geom_bar() +
+  labs(x="Result of Rapid Antigen Detection Testing", y="Number of RADT Tests", title="Distribution of Number of Positive RADT Tests", colour="Cylinders")
+```
+
+As we can see we have a pretty even distribution of positive and negative cases. This is convenient because it means we won't have to do any under/oversampling or worry about the models being overly sensitive to the majority class and ignoring the minority class.
+
+
+```{r}
+#Correlation Matrix
+model.matrix(~., data = pharyngitis) %>% 
+  as.data.frame() %>% 
+  select(-`(Intercept)`) %>% 
+cor(use="pairwise.complete.obs") %>%
+  corrplot(type="lower", title="Correlation Plot of Symptoms", mar=c(0,0,1,0))
+```
+
+I am surprised to see that none of the predictors are strongly correlated in either direction. I would have suspected that predictors like pain and swollenadp or cough and erythema would be correlated because swollen lymph nodes are usually painful and coughing can lead to erythema. However not having any strong correlations is not a bad thing because we can avoid including interaction terms which would increase the complexity of the models.
+
+
+The three symptoms I picked to plot are scarlatiniform rash, swollen lymph nodes and palatal petechiae. I picked these predictors because I've read that in doctor's experience these are some of the biggest indicators that a child will test positive for GAS. These plots show the percentage of children having GAS given them being positive or negative for the given symptom.
+```{r}
+#Scarlet Plot
+pharyngitis %>% 
+  drop_na() %>% 
+  ggplot(aes(scarlet)) + 
+  geom_bar(aes(fill = radt)) +
+  labs(x="Scarlatiniform Rash (0 = negative, 1 = positive)", title="Scarlatiniform Rash vs GAS")
+```
+
+After looking at the plot I think we will find that scarlatiniform rash will be one of the biggest predictors. Of the children that don't have this rash only about 40% of them test positive for GAS, whereas almost all the children with this symptom end up testing positive. 
+
+```{r}
+#Swollenadp Plot
+pharyngitis %>% 
+  drop_na() %>% 
+  ggplot(aes(swollenadp)) + 
+  geom_bar(aes(fill = radt))+
+  labs(x="Swollen Lymph Nodes (0 = not swollen, 1 < 1cm, 2 = 1cm-2cm, 3 > 2cm)", title="Swollen Lymph Nodes vs GAS")
+```
+
+Swollen lymph nodes also look like they are going to be a good predictor with the more swollen the lymph nodes the more likely they are to have GAS. Children without swollen lymph nodes only test positive in about one-third of cases, children with swollen lymph nodes less than 1cm test positive in just under half the cases, children with swollen lymph nodes between 1cm and 2cm test positive in just over half the cases and children with swollen lymph nodes greater than 2cm test positive in about 75% of cases.
+
+```{r}
+#Petechiae Plot
+pharyngitis %>% 
+  drop_na() %>% 
+  ggplot(aes(petechiae)) + 
+  geom_bar(aes(fill = radt))+
+  labs(x="Palatal Petechiae (0 = negative, 1 = positive)", title="Palatal Petechiae vs GAS")
+```
+
+By looking at this chart I would reckon we are 3 for 3 in charting symptoms that will be influential. Once again we see that children without the symptom, in this case, palatal petechiae, only test positive for GAS in less than 40% of cases whereas children with the symptom end up testing positive in about 75% of cases.
+
+# Setting Up the Models
+Now that we have a good idea of what our data looks like we can go on to setting up the models. In this section, we will split our data set into training and testing sets, set up the recipes and implement k-fold cross validation.
+
+## Creating Train/Test Splits
+We first want to set a seed so our results are reproducible and the datasets will remain the same each time we rerun the program. Before we can begin building our models we need to split up our dataset. The first data set that we will create is the training data set which is used to teach the model. The second data set we'll create is the testing data set which is used at the end to measure how well our model performs on data it's never seen before. This is crucial for understanding how well the model is likely to generalize to new, unseen data. Without a separate test set, the model's performance might be overly optimistic, as it could simply memorize the training data. Finally, we are going to stratify on the response variable to help create more representative and balanced samples. 
+```{r}
+#Set Seed for Reproducibility
+set.seed(10)
+
+#Splitting with 80% in Training
+pharyngitis_split <- initial_split(pharyngitis, strata=radt, prop=0.8)
+
+pharyngitis_train <- training(pharyngitis_split)
+pharyngitis_test <- testing(pharyngitis_split)
+```
+Checking the dimensions of the new data sets:
+```{r}
+#Verify Split
+pharyngitis_train %>% 
+  dim()
+pharyngitis_test %>% 
+  dim()
+```
+We see that roughly 80% of the data is in the training set and roughly the other 20% is in the testing set.
+
+
+## Creating a Recipe
+
+Now it's finally time to create our recipes! for our recipes, we are including all of the predictors that we still have in the data set. In both recipes, we turn all the categorical variables into dummy variables and we impute all the missing values using k-nearest neighbors. We also choose to normalize all the predictors except for the random forest recipe where normalizing isn't necessary.
+```{r}
+#Recipe with All Predictors
+pharyngitis_recipe <- recipe(radt ~., data=pharyngitis_train) %>% 
+  step_impute_knn(all_predictors()) %>% 
+  step_dummy(all_nominal_predictors()) %>% #Dummy variables
+  step_normalize(all_predictors())  #Normalize all predictors
+  
+#Recipe with All Predictors for RFs
+pharyngitis_recipe_rf <- recipe(radt ~., data=pharyngitis_train) %>% 
+  step_impute_knn(all_predictors()) %>% 
+  step_dummy(all_nominal_predictors())
+```
+
+
+## K-Fold Cross Validation
+K-fold cross-validation is used to assess the performance of a predictive model. It involves partitioning the dataset into k subsets (folds) and performing model training and evaluation k times, each time using a different fold as the test set and the remaining folds as the training set. The results are then averaged over the k iterations to provide a more robust estimate of the model's performance. In this case, we are only choosing 5 folds because adding more is computationally expensive. We are also once again stratifying on our response variable to ensure that the data in the folds is not imbalanced.
+
+```{r}
+#Cross Validate with 5 Folds
+pharyngitis_folds <- vfold_cv(pharyngitis_train, v=5, strata=radt)
+```
+
+# Building Models
+
+The four models that we will be building and fitting are k-nearest neighbors, elastic net regression, random forests and support vector machines all of which are excellent tools for binary classification problems. The primary metric we will be using to evaluate performance is the receiver operating characteristic area under the curve (ROC AUC). It provides a comprehensive evaluation of a model's ability to discriminate between the positive and negative classes by considering various trade-offs between sensitivity (true positive rate) and specificity (true negative rate).
+
+Now onto building the models:
+
+1. We begin by setting up the model. To do this we need to tell it what type of model it is, what the value of the hyperparameters are or whether they should be tuned, what engine to use and what mode to use. For this problem, the mode is always going to be classification.
+
+2. We then need to set up a workflow. To do this you need to add the recipe from the previous section and the model from the previous step.
+
+3. Next we create a tuning grid. In this grid you need to define what range of hyperparameter values to try and how many levels of tuning for each parameter.
+
+4. Now we need to tune the model. To do this we need to supply the function with the workflow, the folds and the tuning grid.
+
+5. Then we select the model with the hyperparameter value that results in the highest ROC AUC.
+
+6. We will then finalize our workflow using the earlier workflow and the optimal model from the previous step.
+
+7. Finally we fit the model on the training data.
+
+```{r}
+#Models
+
+#KNN Model
+pharyngitis_knn <- nearest_neighbor(neighbors = tune()) %>% 
+  set_engine("kknn") %>% 
+  set_mode("classification")
+
+#EN Model
+pharyngitis_en <- logistic_reg(penalty = tune(), mixture=tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("glmnet")
+
+#RF Model
+pharyngitis_rf <- rand_forest(mtry = tune(), 
+                           trees = tune(), 
+                           min_n = tune()) %>%
+  set_engine("ranger", importance="impurity") %>% 
+  set_mode("classification")
+
+#SVM Model
+pharyngitis_svm <- svm_rbf(cost=tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("kernlab")
+```
+
+```{r}
+#Workflows
+
+#KNN Workflow
+pharyngitis_knn_wf <- workflow() %>% 
+  add_model(pharyngitis_knn) %>% 
+  add_recipe(pharyngitis_recipe)
+
+#EN Workflow
+pharyngitis_en_wf <- workflow() %>% 
+  add_recipe(pharyngitis_recipe) %>% 
+  add_model(pharyngitis_en)
+
+#RF Workflow
+pharyngitis_rf_wf <- workflow() %>% 
+  add_model(pharyngitis_rf) %>% 
+  add_recipe(pharyngitis_recipe_rf)
+
+#SVM Workflow
+pharyngitis_svm_wf <- workflow() %>% 
+  add_recipe(pharyngitis_recipe) %>% 
+  add_model(pharyngitis_svm)
+```
+
+```{r}
+#Create Grids
+
+#KNN Create Grid
+pharyngitis_knn_grid <- grid_regular(neighbors(range=c(1,20)), levels =10)
+
+#EN Create Grid
+pharyngitis_en_grid <- grid_regular(penalty(range=c(0,1),
+                                            trans=identity_trans()), 
+                                    mixture(range=c(0,1)), levels=10)
+
+#RF Create Grid
+pharyngitis_rf_grid <- grid_regular(mtry(range = c(1,18)),
+                                    trees(range = c(200, 1000)),
+                                    min_n(range = c(5,30)),
+                                    levels = 5)
+
+#SVM Create Grid
+pharyngitis_svm_grid <- grid_regular(cost(), levels = 5)
+```
+
+```{r, warning=FALSE}
+#Tune Grids
+
+#KNN Tune Grid
+pharyngitis_knn_tune <- tune_grid(
+  object = pharyngitis_knn_wf,
+  resamples = pharyngitis_folds,
+  grid = pharyngitis_knn_grid
+)
+
+#EN Tune Grid
+pharyngitis_en_tune <- tune_grid(
+  pharyngitis_en_wf,
+  resamples = pharyngitis_folds,
+  grid = pharyngitis_en_grid
+)
+
+#RF Tune Grid
+pharyngitis_rf_tune <- tune_grid(
+  pharyngitis_rf_wf,
+  resamples = pharyngitis_folds,
+  grid = pharyngitis_rf_grid
+)
+
+#SVM Tune Grid
+pharyngitis_svm_tune <- tune_grid(
+  pharyngitis_svm_wf, 
+  resamples = pharyngitis_folds, 
+  grid = pharyngitis_svm_grid
+  )
+```
+
+```{r}
+#Select Optimal Hyperparameters
+
+#KNN Optimal Hyperparameter
+pharyngitis_best_neighbors <- select_by_one_std_err(pharyngitis_knn_tune, desc(neighbors), metric = "roc_auc")
+
+#EN Optimal Hyperparameters
+pharyngitis_best_en <- select_by_one_std_err(pharyngitis_en_tune, metric= "roc_auc", penalty, mixture)
+
+#RF Optimal Hyperparameters
+pharyngitis_best_rf <- select_best(pharyngitis_rf_tune, metric="roc_auc")
+
+#SVM Optimal Hyperparameter
+pharyngitis_best_svm <- select_best(pharyngitis_svm_tune, metric="roc_auc")
+```
+
+```{r}
+#Finalize Workflow
+
+#KNN Finalize Workflow
+pharyngitis_final_knn_wf <- finalize_workflow(pharyngitis_knn_wf, pharyngitis_best_neighbors)
+
+#EN Finalize Workflow
+pharyngitis_final_en <- finalize_workflow(pharyngitis_en_wf, pharyngitis_best_en)
+
+#RF Finalize Workflow
+pharyngitis_final_rf <- finalize_workflow(pharyngitis_rf_wf, pharyngitis_best_rf)
+
+#SVM Finalize Workflow
+pharyngitis_final_svm <- finalize_workflow(pharyngitis_svm_wf, pharyngitis_best_svm)
+```
+
+```{r}
+#Fit Model
+
+#KNN Fit Model
+pharyngitis_final_knn <- fit(pharyngitis_final_knn_wf, pharyngitis_train)
+
+#EN Fit Model
+pharyngitis_final_en <- fit(pharyngitis_final_en, data=pharyngitis_train)
+
+#RF Fit Model
+pharyngitis_final_rf <- fit(pharyngitis_final_rf, pharyngitis_train)
+
+#SVM Fit Model
+pharyngitis_final_svm <- fit(pharyngitis_final_svm, pharyngitis_train)
+```
+
+# Model Results
+In this section we will be visually and numerically examining the performance of the models on the training dataset.
+
+## Model Autoplots
+
+### K-Nearest Neighbors
+K-Nearest Neighbors is an algorithm that assigns a class label to a new data point based on the majority class among its k-nearest neighbors in the feature space. In other words, it classifies the point by considering the most common class within its k closest data points. KNN is non-parametric, making minimal assumptions about the data distribution. There is only one hyperparameter in this model:
+
+`neighbors`: which is the number of neighboring data points considered when making predictions for a new, unseen data point. The hyperparameter is denoted as "k".
+```{r}
+#K-nearest Neighbors Plot
+autoplot(pharyngitis_knn_tune)
+```
+
+As we can see our model has the highest ROC AUC with 20 neighbors but even this highest value is not great with an ROC AUC of about 0.69.
+
+### Elastic Net Regression
+Elastic Net Regression is a method that combines Lasso (L1 regularization) and Ridge (L2 regularization) techniques. It balances feature selection and addresses multicollinearity issues by minimizing the sum of squared errors with a regularization term. The algorithm is controlled by two hyperparameters, allowing you to adjust the mix of L1 and L2 penalties. Elastic Net is effective in high-dimensional datasets, providing a compromise between the sparsity-inducing property of Lasso and the grouping effect of Ridge. In our model the two hyperparameters are:
+
+`mixture`: which determines the mixture of lasso and ridge regularization penalties.
+
+`penalty`: which controls the overall strength of the regularization penalty. A higher value increases the penalty, leading to more regularization.
+```{r, warning=FALSE}
+#Elastic Net Regression Plot
+autoplot(pharyngitis_en_tune, curvetype="roc_auc")
+```
+
+Luckily this model performed better than k-nearest neighbors with an ROC AUC of about 0.74 which is an acceptable result. The model performed best with very little mixture and very little lasso penalty.
+
+
+### Random Forest
+Random Forest is an ensemble learning algorithm used for both classification and regression tasks. It builds multiple decision trees during training and merges their predictions to improve overall accuracy and robustness. Each tree is trained on a random subset of the data and features, introducing diversity. In classification, the final prediction is the mode of the individual tree predictions. Random Forest mitigates overfitting, handles non-linearity, and is less prone to outliers. The three hyperparameters that we are tuning are:
+
+`mtry` which is the number of randomly selected predictors per split.
+
+`trees` which is the total number of trees contained in the ensemble.
+
+`min_n` which is the minimum number of data points that the node has to contain before it can be split.
+```{r}
+#Random Forest Plot
+autoplot(pharyngitis_rf_tune)
+```
+
+More good results here! It appears that the best model has an ROC AUC of approximately 0.765. The number of trees doesn't appear to effect the performance because the lines are mostly overlapping. The number of predictors peaks around five and then the performance starts to decline as you add more. Lastly, the minimal node size has a big impact on performance with the ROC AUC increasing as you increase this value.
+
+### Support Vector Machine
+Support Vector Machines work by finding the optimal hyperplane that best separates data points of different classes while maximizing the margin between them. In classification, it aims to find a hyperplane that maximizes the margin between classes, and for non-linear problems, it uses the kernel trick to map data into higher-dimensional spaces. SVM is effective in handling high-dimensional datasets and is less influenced by outliers. It's a robust algorithm that works well in various domains, providing flexibility through different kernel functions such as linear, polynomial, and radial basis functions. The choice of the kernel and regularization parameters allows users to tailor SVM to different types of data and problem complexities. The hyperparameter we are tuning is:
+
+`cost`: which controls the trade-off between achieving a low training error and a low testing error, thus preventing overfitting.
+```{r}
+#Support Vector Machines Plot
+autoplot(pharyngitis_svm_tune)
+```
+
+Once again our model gave us fair results with an ROC AUC of about 0.73 on the optimal model. The optimal value for cost in this case is 0.0009, we are generally getting better results in this model with lower cost values. With the maximum cost value of 32, the ROC AUC was almost 0.1 lower.
+
+## Model Performance
+Now that we've examined the plots we can compare the mean ROC AUC of the best model for each algorithm. 
+```{r}
+#K-Nearest Neighbors ROC AUC
+pharyngitis_knn_roc_auc <- pharyngitis_knn_tune %>% show_best(n = 1, metric="roc_auc") %>% select(mean)
+
+#Elastic Net ROC AUC
+pharyngitis_en_roc_auc <- pharyngitis_en_tune %>% show_best(n = 1, metric="roc_auc") %>% select(mean)
+
+#Random Forest ROC AUC
+pharyngitis_rf_roc_auc <- pharyngitis_rf_tune %>% show_best(n = 1, metric="roc_auc") %>% select(mean)
+
+#Support Vector Machine ROC AUC
+pharyngitis_svm_roc_auc <-pharyngitis_svm_tune %>% show_best(n = 1, metric="roc_auc") %>% select(mean)
+
+
+#Table of ROC AUCs
+final_compare_train <- tibble(Model = c("K-Nearest Neighbors", "Elastic Net", "Random Forest", "Support Vector Machine"), ROC_AUC = c(pharyngitis_knn_roc_auc$mean, pharyngitis_en_roc_auc$mean, pharyngitis_rf_roc_auc$mean, pharyngitis_svm_roc_auc$mean))
+
+# Ordering ROC AUCs
+final_compare_train <- final_compare_train %>% 
+  arrange(ROC_AUC)
+
+#Print Table
+final_compare_train
+```
+
+As we can see the random forest model is the clear victor here with an ROC AUC of 0.761. Elastic net was in second place with an ROC AUC of 0.739, closely followed by support vector machine which had an ROC AUC of 0.730 and way in last place we have k-nearest neighbors with a measly ROC AUC of 0.689. Though it should be noted that this is only the performance of the models on the training data set, we need to expose the models to data they have not seen before to get a better understanding of how they perform in real-world scenarios.
+
+# Testing the Model
+Now that we know what the optimal models are for our top-performing algorithms we can fit them to our testing data and find out how good they actually are at predicting GAS in children.
+
+Here we are going to take our best random forest and elastic net models, find their ROC AUCs on the testing data set and then put them in a table for easy comparison.
+```{r}
+#Random Forest ROC AUC Testing
+pharyngitis_rf_acc <- augment(pharyngitis_final_rf, new_data=pharyngitis_test) %>% 
+  roc_auc(radt, .pred_Negative)
+
+#Elastic Net ROC AUC Testing
+pharyngitis_en_acc <- augment(pharyngitis_final_en, new_data=pharyngitis_test) %>% 
+  roc_auc(radt, .pred_Negative)
+
+
+#Table of ROC AUCs
+final_compare_test <- tibble(Model = c("Elastic Net", "Random Forest"), 
+                             ROC_AUC = c(pharyngitis_en_acc$.estimate,
+                                         pharyngitis_rf_acc$.estimate))
+
+# Ordering ROC AUCs
+final_compare_test <- final_compare_test %>% 
+  arrange(ROC_AUC)
+
+#Print Table
+final_compare_test
+```
+Oh no! Unfortunately, our models performed significantly worse on the testing data set. The threshold for a fair and acceptable ROC AUC is typically at least 0.7 and none of our models could meet that benchmark. Our Random Forest which had a respectable ROC AUC on the training data only has 0.673 on the testing data, a whole 0.088 lower. The elastic net model has an ROC AUC of 0.658, 0.080 lower than on the training data. This means the average ROC AUC is an entire 0.084 lower on the test dataset. However given the difficulty of trying to predict GAS in children these results didn't shock me.  
+
+## ROC Curves
+An ROC curve is a graphical representation used in binary classification to evaluate the performance of a classifier. It plots the true positive rate (sensitivity) against the false positive rate (1-specificity) for different threshold values. A diagonal line in the ROC space represents random guessing, and a good classifier's ROC curve should be positioned toward the upper-left corner, indicating high sensitivity and low false positive rates across different threshold values. We can use them to visualize the performance of our models on the testing data.
+
+
+#### ROC Curve of the Elastic Net model:
+```{r}
+augment(pharyngitis_final_en, new_data=pharyngitis_test) %>% 
+  roc_curve(radt, .pred_Negative) %>% 
+  autoplot()
+```
+
+#### ROC Curve of the Random Forest model:
+```{r}
+augment(pharyngitis_final_rf, new_data=pharyngitis_test) %>% 
+  roc_curve(radt, .pred_Negative) %>% 
+  autoplot()
+```
+
+As we can see, the ROC curves look pretty similar with the lines not curving up much past the diagonal which just reconfirms what we saw before that our models don't perform very well and in some cases aren't much better at predicting than just randomly guessing.
+
+## Variable Importance Scores
+Variable importance scores are a way to quantify and rank the importance of different predictors in our model. These scores help us understand which predictors have the most significant impact on the model's predictions.
+
+#### Random Forest Variable Importance Scores:
+```{r}
+pharyngitis_final_rf %>% 
+  extract_fit_engine() %>% 
+  vip()
+```
+
+Based on this plot we can see that age, scarlet, petechiae and temperature are the most important predictors. Scarlet and petechiae were two that I was expecting to see at the top because doctors say from their experience that if a child has a scarlatiniform rash or palatal petechiae it's very likely they also have GAS. Temperature also makes sense because it's usually a side effect of the other two symptoms and just generally a sign that your body is trying to fight something off. Now age is the one that surprised me a bit. My data set contains cases from children ranging from 3 to 14 years of age and GAS is rare in children under 5 and I didn't think it would be that important since most of the children are not that young. What I assume is happening is if the random forest sees a case where they are 3 or 4 it can predict they're negative with extremely high probability, much higher than any other single predictor is able to. It might even be the first split in the tree.
+
+#### Elastic Net Variable Importance Scores:
+```{r}
+pharyngitis_final_en %>% 
+  extract_fit_engine() %>% 
+  vip()
+```
+
+In the elastic net model we can see that scarlet and petechiae are by far the two most important predictors, which I previously stated makes logical sense. Interestingly, this model doesn't rank temperature nearly as high and age is non-existent on the plot. I suspect age isn't on this plot because elastic net doesn't use the same splitting structure as random forests.
+
+# Conclusion
+Of the four models we fit, the random forest performed the best which didn't surprise me because random forests are a very flexible algorithm. Even though it was the best, it still wasn't good. I was pretty optimistic after seeing the very respectable ROC AUC on the training data but unfortunately, this optimism didn't last long after I ran the model on the testing data and saw a below acceptable ROC AUC. I was surprised to see such a low ROC AUC on the testing data because this is usually a symptom of overfitting but random forests are designed to minimize overfitting. I assume the poor performance on the testing set is because of my relatively small dataset with about 500 observations in my training set and 100 observations in the testing set so the model may have had difficulty learning the true underlying patterns and might have instead memorized noise.
+
+The poorest performing model is k-nearest neighbors which I suspected given how the other algorithms I chose were relatively complex. The dataset I was using had a lot of predictors and k-nearest neighbors doesn't tend to perform very well in high-dimensional spaces because it's hard to make connections in that many dimensions without a massive number of observations. I would be very interested to see how k-nearest neighbors would stack up against the other algorithms if it was trained on a larger dataset. Interestingly though, k-nearest neighbors had the closest testing ROC AUC and training ROC AUC.
+  
+If I were to continue the project I would try to find a dataset with more observations, more predictors and more detailed information about the symptoms, like the severity, and not just if the symptom is present or not. I would also try fitting additional models to see if can get better performance with a different algorithm. I want to explore medical diagnosis prediction more so I'm planning on finding datasets of different illnesses and seeing if there are any illnesses that I am able to predict with a high certainty.
+  
+The necessity of RADT has been a hotly debated issue among medical professionals. Even doctors with ample formal training, years of experience and the ability to see the patient in person are often weary to diagnose someone without testing. After checking the performance of the models on the testing dataset I don't think doctors are going to be in a rush to replace RADT and leave diagnosing to a machine learning model that only looks at symptoms as binary values. I suspected these results going into the project so I'm not shocked or disappointed. I still learned a lot and had a fun time compiling this project even if it's not going to replace the medical testing industry.
+
+
+
+
